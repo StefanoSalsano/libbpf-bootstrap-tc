@@ -486,12 +486,28 @@ int update_window_start_timer(struct bpf_timer *timer, __u64 timeout)
 	return rc;
 }
 
+static __always_inline int
+prepare_ring_buffer_write(void *map, struct event **pevent)
+{
+	if (!pevent)
+		return -EINVAL;
+
+	/* let's send data to userspace using ring buffer */
+	*pevent = bpf_ringbuf_reserve(&rbuf, sizeof(**pevent), 0);
+	if (!(*pevent))
+		/* no space left on ring buffer */
+		return -ENOMEM;
+
+	return 0;
+}
+
 static __always_inline
 int update_window(struct slotted_window *sw, __u64 ts, bool start_timer)
 {
 	const __u64 cur_tsw = ts / SWIN_SCALER;
 	__u64 tsw = READ_ONCE(sw->tsw);
 	__u64 *cnt = &sw->cnt;
+	struct event *event;
 	__u64 cnt_val;
 	__u64 delta;
 	__u64 avg;
@@ -523,10 +539,19 @@ int update_window(struct slotted_window *sw, __u64 ts, bool start_timer)
 
 	WRITE_ONCE(sw->avg, avg);
 
-	/* TODO: send to RING BUFFER rather than print on trace */
-	bpf_printk("CLOSING window; tsw=%llu, avg(fp)=%llu, avg=%llu",
-		   tsw, avg, __LOG_SCALE_OUT(avg));
+	/* write the content on ring buffer */
+	rc = prepare_ring_buffer_write(&rbuf, &event);
+	if (rc)
+		goto update_win;
 
+	event->ts = tsw;
+	/* TODO: harcoded for the moment */
+	event->flowid = 1;
+	event->counter = __LOG_SCALE_OUT(avg);
+
+	bpf_ringbuf_submit(event, 0);
+
+update_win:
 	/* time to create a new window */
 	WRITE_ONCE(*cnt, 0);
 	WRITE_ONCE(sw->tsw, cur_tsw);

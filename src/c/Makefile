@@ -21,6 +21,9 @@ INCLUDES := -I$(OUTPUT) -I../../libbpf/include/uapi -I$(dir $(VMLINUX))
 CFLAGS := -g -Wall
 ALL_LDFLAGS := $(LDFLAGS) $(EXTRA_LDFLAGS)
 
+INFDB_WRP_SRC = influxdb_wrapper.cpp influxdb_wrapper_int.cpp
+INFLDB_WRP_OBJ = $(addprefix $(OUTPUT)/,$(INFDB_WRP_SRC:.cpp=.o))
+
 APPS = tc
 
 # Get Clang's default includes on this system. We'll explicitly add these dirs
@@ -101,11 +104,14 @@ $(OUTPUT)/%.o: %.c $(wildcard %.h) | $(OUTPUT)
 	$(call msg,CC,$@)
 	$(Q)$(CC) $(CFLAGS) $(INCLUDES) -c $(filter %.c,$^) -o $@
 
+$(OUTPUT)/%.o: %.cpp $(wildcard %.h) |  $(OUTPUT)
+	$(call msg,CCX,$@)
+	$(Q)$(CXX) $(CFLAGS) -c $(filter %.cpp,$^) -o $@
 
 # Build application binary
-$(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) | $(OUTPUT)
+$(APPS): %: $(OUTPUT)/%.o $(LIBBPF_OBJ) $(INFLDB_WRP_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $^ $(ALL_LDFLAGS) -lelf -lz -lstdc++ -lInfluxDB -o $@
 
 # delete failed targets
 .DELETE_ON_ERROR:

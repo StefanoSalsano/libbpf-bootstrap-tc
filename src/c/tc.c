@@ -5,8 +5,9 @@
 #include "tc.skel.h"
 
 #include "common.h"
+#include "influxdb_wrapper_int.h"
 
-#define LO_IFINDEX 1
+#define LO_IFINDEX 2
 
 static volatile sig_atomic_t exiting = 0;
 
@@ -22,10 +23,17 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 int handle_event(void *ctx, void *data, size_t data_sz)
 {
+	MHandler_t *infh = (MHandler_t *)ctx;
 	const struct event *e = data;
+	int rc;
 
 	printf("ts: %llu, flowid: %llu, a: %llu\n",
 	       e->ts, e->flowid, e->counter);
+
+	rc = write_flowrate_influxdb(infh, e->ts, e->flowid, e->counter);
+	if (rc)
+		fprintf(stderr, "An error (%d) occurred while writing point to InfluxDB\n",
+			rc);
 
 	return 0;
 }
@@ -38,6 +46,7 @@ int main(int argc, char **argv)
 	bool hook_created = false;
 	struct ring_buffer *rbuf;
 	struct tc_bpf *skel;
+	MHandler_t *infh;
 	int err;
 
 	libbpf_set_print(libbpf_print_fn);
@@ -75,13 +84,20 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	infh = create_influxdb("http://localhost:8086?db=traffic_rate_db");
+	if (!infh) {
+		err = -EINVAL;
+		fprintf(stderr, "Failed to create InfluxDB handler");
+		goto cleanup;
+	}
+
 	/* ring buffer */
-	rbuf = ring_buffer__new(bpf_map__fd(skel->maps.rbuf), handle_event,
-				NULL, NULL);
+	rbuf = ring_buffer__new(bpf_map__fd(skel->maps.rbuf),
+				handle_event, infh, NULL);
 	if (!rbuf) {
 		err = -1;
 		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup;
+		goto cleanup_influx;
 	}
 
 	printf("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
@@ -104,9 +120,11 @@ int main(int argc, char **argv)
 	err = bpf_tc_detach(&tc_hook, &tc_opts);
 	if (err) {
 		fprintf(stderr, "Failed to detach TC: %d\n", err);
-		goto cleanup;
+		goto cleanup_influx;
 	}
 
+cleanup_influx:
+	destroy_influxdb(infh);
 cleanup:
 	ring_buffer__free(rbuf);
 
